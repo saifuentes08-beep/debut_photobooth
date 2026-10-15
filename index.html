@@ -28,13 +28,16 @@ button.secondary{background:#f1e2e8;color:var(--deep)}
 button:disabled{opacity:.45;cursor:not-allowed}
 .controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px}
 video,canvas.preview{display:block;width:100%;max-height:58vh;object-fit:contain;border-radius:16px;background:#211a20}
-#cameraBox{position:relative;max-width:560px;margin:14px auto 0}
-#cameraBox video{transform:scaleX(-1)}
+#cameraBox{position:relative;width:min(100%,calc(58vh * var(--camera-ratio, 1.03)));aspect-ratio:var(--camera-ratio, 1.03);margin:14px auto 0;overflow:hidden;border-radius:16px;background:#211a20}
+#cameraBox video{width:100%;height:100%;max-height:none;aspect-ratio:auto;object-fit:cover;border-radius:0;transform:scaleX(-1)}
 #result{display:block;width:100%;max-width:440px;height:auto;margin:14px auto;border-radius:8px;box-shadow:0 10px 28px #59384722;background:white}
 .hidden{display:none!important}
 .status{text-align:center;font:14px/1.5 Arial,sans-serif;color:#775b66;min-height:22px;margin:10px 0}
 .count{text-align:center;font:600 13px Arial,sans-serif;letter-spacing:.08em;color:var(--rose)}
 .note{font:13px/1.55 Arial,sans-serif;color:#795f6a}
+.share-consent{display:flex;gap:10px;align-items:flex-start;background:#fffaf5;border:1px solid #ead4dd;border-radius:14px;padding:13px;margin:14px 0;font:14px/1.5 Arial,sans-serif;color:#593847}
+.share-consent input{width:18px;height:18px;flex:0 0 auto;margin-top:2px;accent-color:#b86b83}
+.share-consent strong{display:block;margin-bottom:4px}
 footer{text-align:center;font:12px/1.6 Arial,sans-serif;color:#8b6c78;padding:12px}
 input[type=text]{width:100%;border:1px solid #e1c4d0;border-radius:12px;padding:12px;font:16px Arial,sans-serif;background:white;color:var(--deep)}
 label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
@@ -80,9 +83,13 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   <h2 style="text-align:center">Your keepsake ♡</h2>
   <p style="text-align:center">Love it? Save it to your device. Not quite right? Retake it.</p>
   <canvas id="result" class="preview" width="900" height="1200"></canvas>
+  <label class="share-consent" for="shareConsent">
+    <input id="shareConsent" type="checkbox">
+    <span><strong>Share your memory? ♡</strong>Your photo will be uploaded to our shared debut gallery, where other guests may view it. If you choose not to share, you can still download your photo privately. Please submit only photos you have permission to share.</span>
+  </label>
   <div class="controls">
     <button id="download" type="button">Download photo</button>
-    <button id="submitGallery" class="secondary" type="button">Submit to Gallery ♡</button>
+    <button id="submitGallery" class="secondary" type="button" disabled>Submit to Gallery ♡</button>
     <button id="retake" class="secondary" type="button">Retake</button>
     <button id="startOver" class="secondary" type="button">Back to choices</button>
   </div>
@@ -125,13 +132,25 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   const canvas = document.getElementById('result');
   const ctx = canvas.getContext('2d');
   let stream = null, mode = 'polaroid', photos = [], cameraReady = false;
+  let uploadInProgress = false, submittedCurrentPhoto = false;
+  const shareConsent = document.getElementById('shareConsent');
+  const submitGalleryButton = document.getElementById('submitGallery');
 
   function show(section) {
     [home, shoot, review, gallery].forEach(s => s.classList.add('hidden'));
     section.classList.remove('hidden');
   }
+  function resetShareConsent() {
+    shareConsent.checked = false;
+    uploadInProgress = false;
+    submittedCurrentPhoto = false;
+    submitGalleryButton.disabled = true;
+    uploadStatus.textContent = '';
+  }
   async function start(modeChoice) {
     mode = modeChoice; photos = []; thumbs.innerHTML = '';
+    // Match the live camera crop to the photo area used by the final template.
+    document.getElementById('cameraBox').style.setProperty('--camera-ratio', mode === 'strip' ? '624 / 410' : '816 / 792');
     show(shoot);
     finishBtn.classList.toggle('hidden', mode !== 'strip');
     captureBtn.classList.remove('hidden');
@@ -163,7 +182,7 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
     img.src = dataUrl; img.alt = 'Captured pose ' + photos.length; img.className = 'thumb';
     thumbs.appendChild(img);
   }
-  function capture() {
+  async function capture() {
     if (!cameraReady || !video.videoWidth) return;
     const c = document.createElement('canvas');
     c.width = video.videoWidth; c.height = video.videoHeight;
@@ -172,7 +191,7 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
     cctx.drawImage(video,0,0,c.width,c.height);
     photos.push(c.toDataURL('image/jpeg', .94));
     if (mode === 'polaroid') {
-      stopCamera(); drawPolaroid(photos[0]); show(review); return;
+      stopCamera(); await drawPolaroid(photos[0]); resetShareConsent(); show(review); return;
     }
     addThumb(photos[photos.length - 1]);
     progress.textContent = 'PHOTO STRIP · ' + photos.length + ' OF 4';
@@ -229,7 +248,9 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
     return 'guest-' + Date.now() + '-' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '.jpg';
   }
   async function submitToGallery() {
-    const button = document.getElementById('submitGallery');
+    const button = submitGalleryButton;
+    if (!shareConsent.checked || uploadInProgress || submittedCurrentPhoto) return;
+    uploadInProgress = true;
     button.disabled = true;
     uploadStatus.textContent = 'Preparing your photo for upload…';
     try {
@@ -253,11 +274,13 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
         if (response.status === 413) throw new Error('The image is too large for the bucket upload limit.');
         throw new Error('Upload failed (' + response.status + '). ' + detail);
       }
+      submittedCurrentPhoto = true;
       uploadStatus.textContent = 'Submitted! Thank you for sharing your memory ♡';
     } catch (e) {
       uploadStatus.textContent = 'Could not submit photo: ' + e.message;
     } finally {
-      button.disabled = false;
+      uploadInProgress = false;
+      button.disabled = !shareConsent.checked || submittedCurrentPhoto;
     }
   }
   async function loadGallery() {
@@ -298,11 +321,19 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   document.getElementById('polaroidChoice').addEventListener('click', () => start('polaroid'));
   document.getElementById('stripChoice').addEventListener('click', () => start('strip'));
   captureBtn.addEventListener('click', capture);
-  finishBtn.addEventListener('click', async () => { stopCamera(); await drawStrip(); show(review); });
+  finishBtn.addEventListener('click', async () => { stopCamera(); await drawStrip(); resetShareConsent(); show(review); });
   document.getElementById('backHome').addEventListener('click', () => { stopCamera(); show(home); });
   document.getElementById('startOver').addEventListener('click', () => { photos=[]; thumbs.innerHTML=''; show(home); });
   document.getElementById('retake').addEventListener('click', () => start(mode));
-  document.getElementById('submitGallery').addEventListener('click', submitToGallery);
+  submitGalleryButton.addEventListener('click', submitToGallery);
+  shareConsent.addEventListener('change', () => {
+    submitGalleryButton.disabled = !shareConsent.checked || uploadInProgress || submittedCurrentPhoto;
+    if (shareConsent.checked && !submittedCurrentPhoto) {
+      uploadStatus.textContent = 'You can share this photo with the gallery, or leave it unchecked to keep your photo private.';
+    } else if (!shareConsent.checked && !submittedCurrentPhoto) {
+      uploadStatus.textContent = '';
+    }
+  });
   document.getElementById('openGallery').addEventListener('click', () => { show(gallery); loadGallery(); });
   document.getElementById('refreshGallery').addEventListener('click', loadGallery);
   document.getElementById('galleryHome').addEventListener('click', () => show(home));
