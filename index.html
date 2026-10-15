@@ -40,6 +40,7 @@ input[type=text]{width:100%;border:1px solid #e1c4d0;border-radius:12px;padding:
 label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
 .thumbrow{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 .thumb{width:64px;height:64px;object-fit:cover;border:2px solid white;box-shadow:0 2px 8px #59384722;border-radius:6px}
+.gallery-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}.gallery-grid img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:10px;background:#f1e2e8}.gallery-card{text-align:center}.gallery-card a{font:12px Arial,sans-serif;color:var(--rose);word-break:break-word}
 </style>
 </head>
 <body>
@@ -57,6 +58,7 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
     <button class="choice" id="polaroidChoice" type="button"><span class="emoji">📸</span><strong>One Polaroid</strong><small>Take one picture with a classic instant-photo frame.</small></button>
     <button class="choice" id="stripChoice" type="button"><span class="emoji">🎞️</span><strong>Four-photo strip</strong><small>Tap the button for each of your four poses.</small></button>
   </div>
+  <div class="controls"><button class="secondary" id="openGallery" type="button">View shared gallery ♡</button></div>
   <p class="note">Camera access works after this page is published over HTTPS. Please allow camera permission when asked.</p>
 </section>
 
@@ -80,10 +82,20 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   <canvas id="result" class="preview" width="900" height="1200"></canvas>
   <div class="controls">
     <button id="download" type="button">Download photo</button>
+    <button id="submitGallery" class="secondary" type="button">Submit to Gallery ♡</button>
     <button id="retake" class="secondary" type="button">Retake</button>
     <button id="startOver" class="secondary" type="button">Back to choices</button>
   </div>
-  <p class="note" style="text-align:center">Your photo is processed in this browser. This starter version does not upload photos to a shared gallery.</p>
+  <p class="note" style="text-align:center">Your photo stays on this device unless you tap “Submit to Gallery.” Submitted photos can be viewed by other guests. Please only submit photos you have permission to share.</p>
+  <div class="status" id="uploadStatus" role="status" aria-live="polite"></div>
+</section>
+
+<section id="gallery" class="panel hidden">
+  <h2>Shared memories ♡</h2>
+  <p class="note">Photos shown here were voluntarily submitted by guests. Anyone who can access the gallery may be able to view these photos.</p>
+  <div class="controls"><button id="refreshGallery" type="button">Refresh gallery</button><button id="galleryHome" class="secondary" type="button">Back to choices</button></div>
+  <div class="status" id="galleryStatus" role="status" aria-live="polite">Loading shared photos…</div>
+  <div id="galleryGrid" class="gallery-grid"></div>
 </section>
 <footer>Made with love ♡ Customize the title, colors, and frame for your celebration.</footer>
 </main>
@@ -93,6 +105,15 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   const home = document.getElementById('home');
   const shoot = document.getElementById('shoot');
   const review = document.getElementById('review');
+  const gallery = document.getElementById('gallery');
+  const uploadStatus = document.getElementById('uploadStatus');
+  const galleryStatus = document.getElementById('galleryStatus');
+  const galleryGrid = document.getElementById('galleryGrid');
+
+  // Supabase browser credentials: publishable keys are designed for client-side use.
+  const SUPABASE_URL = 'https://omczntklgunpcaaslumc.supabase.co';
+  const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_qsN_-sQUpuhZfARIx0o69Q_xSKzGNJL';
+  const BUCKET = 'debut-gallery';
   const video = document.getElementById('video');
   const status = document.getElementById('status');
   const progress = document.getElementById('progress');
@@ -106,7 +127,7 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   let stream = null, mode = 'polaroid', photos = [], cameraReady = false;
 
   function show(section) {
-    [home, shoot, review].forEach(s => s.classList.add('hidden'));
+    [home, shoot, review, gallery].forEach(s => s.classList.add('hidden'));
     section.classList.remove('hidden');
   }
   async function start(modeChoice) {
@@ -204,6 +225,76 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
     const sx = (img.width-sw)/2, sy = (img.height-sh)/2;
     target.drawImage(img,sx,sy,sw,sh,x,y,w,h);
   }
+  function safeFileName() {
+    return 'guest-' + Date.now() + '-' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '.jpg';
+  }
+  async function submitToGallery() {
+    const button = document.getElementById('submitGallery');
+    button.disabled = true;
+    uploadStatus.textContent = 'Preparing your photo for upload…';
+    try {
+      const blob = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('Could not prepare the image.')), 'image/jpeg', .92));
+      if (blob.size > 15 * 1024 * 1024) throw new Error('This photo is larger than the 15 MB upload limit.');
+      const path = safeFileName();
+      const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+          'Content-Type': 'image/jpeg',
+          'x-upsert': 'false'
+        },
+        body: blob
+      });
+      if (!response.ok) {
+        let detail = '';
+        try { const err = await response.json(); detail = err.message || err.error || ''; } catch (_) {}
+        if (response.status === 403 || response.status === 401) throw new Error('Supabase denied the upload. Check that the anon INSERT policy is saved for bucket debut-gallery. ' + detail);
+        if (response.status === 413) throw new Error('The image is too large for the bucket upload limit.');
+        throw new Error('Upload failed (' + response.status + '). ' + detail);
+      }
+      uploadStatus.textContent = 'Submitted! Thank you for sharing your memory ♡';
+    } catch (e) {
+      uploadStatus.textContent = 'Could not submit photo: ' + e.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+  async function loadGallery() {
+    galleryGrid.innerHTML = '';
+    galleryStatus.textContent = 'Loading shared photos…';
+    try {
+      const response = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_PUBLISHABLE_KEY, 'Authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: '', limit: 60, offset: 0, sortBy: { column: 'created_at', order: 'desc' } })
+      });
+      if (!response.ok) {
+        let detail = '';
+        try { const err = await response.json(); detail = err.message || err.error || ''; } catch (_) {}
+        if (response.status === 400 || response.status === 403 || response.status === 401) throw new Error("Gallery listing is not allowed yet. In Supabase Storage Policies, add a SELECT policy for anon with bucket_id = 'debut-gallery'. " + detail);
+        throw new Error('Could not load gallery (' + response.status + '). ' + detail);
+      }
+      const files = await response.json();
+      const photosOnly = files.filter(file => file.name && /\.(jpe?g|png|webp)$/i.test(file.name));
+      if (!photosOnly.length) {
+        galleryStatus.textContent = 'No shared photos yet. Be the first to submit a memory!';
+        return;
+      }
+      galleryStatus.textContent = photosOnly.length + ' shared photo(s)';
+      photosOnly.forEach(file => {
+        const card = document.createElement('div'); card.className = 'gallery-card';
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.alt = 'Photo shared by a guest';
+        img.src = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${encodeURIComponent(file.name)}`;
+        const link = document.createElement('a'); link.href = img.src; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Open photo';
+        card.append(img, link); galleryGrid.appendChild(card);
+      });
+    } catch (e) {
+      galleryStatus.textContent = e.message;
+    }
+  }
+
   document.getElementById('polaroidChoice').addEventListener('click', () => start('polaroid'));
   document.getElementById('stripChoice').addEventListener('click', () => start('strip'));
   captureBtn.addEventListener('click', capture);
@@ -211,6 +302,10 @@ label.field{display:block;font:13px Arial,sans-serif;margin:12px 0 6px}
   document.getElementById('backHome').addEventListener('click', () => { stopCamera(); show(home); });
   document.getElementById('startOver').addEventListener('click', () => { photos=[]; thumbs.innerHTML=''; show(home); });
   document.getElementById('retake').addEventListener('click', () => start(mode));
+  document.getElementById('submitGallery').addEventListener('click', submitToGallery);
+  document.getElementById('openGallery').addEventListener('click', () => { show(gallery); loadGallery(); });
+  document.getElementById('refreshGallery').addEventListener('click', loadGallery);
+  document.getElementById('galleryHome').addEventListener('click', () => show(home));
   document.getElementById('download').addEventListener('click', () => {
     const a = document.createElement('a');
     a.download = mode === 'strip' ? 'memory-photo-strip.jpg' : 'memory-polaroid.jpg';
